@@ -1,8 +1,8 @@
 #!/bin/bash
 # pve-manager-status.sh
-# Last Modified: 2026-09-15 (SATA fix: 逐盘枚举/设备标记/ATA+SCSI解析/休眠支持)
+# Last Modified: 2026-09-16 (SATA fix + 硬件监控日志采集/界面日志查看)
 
-echo -e "\n🛠️ \033[1;33;41mPVE-Manager-Status v0.6.3-satafix by MiKing233\033[0m"
+echo -e "\n🛠️ \033[1;33;41mPVE-Manager-Status v0.6.3-satafix-log by MiKing233\033[0m"
 
 echo -e "为你的 ProxmoxVE 节点概要页面添加扩展的硬件监控信息"
 echo -e "OpenSource on GitHub (https://github.com/MiKing233/PVE-Manager-Status)\n"
@@ -259,6 +259,128 @@ fi
 
 echo && sleep 0.5
 
+####################   硬件监控信息日志采集   ####################
+
+echo -e "📝 正在部署硬件监控信息日志功能:"
+
+HWLOG_SCRIPT="/usr/local/bin/pve-hardware-log.sh"
+HWLOG_DIR="/var/log/pve-hardware"
+
+# 采集脚本: 由 cron 每5分钟以 root 调用, 仅记录硬件指标 (不含序列号等敏感信息)
+cat > "$HWLOG_SCRIPT" << 'LOGEOF'
+#!/bin/bash
+# pve-hardware-log.sh - 硬件监控信息定时采集 (由 pve-manager-status.sh 安装维护)
+# 调用方: /etc/cron.d/pve-hardware-log (每5分钟)
+# 输出:   /var/log/pve-hardware/hardware.log (logrotate 每日轮转, 保留30天)
+
+LOGDIR="/var/log/pve-hardware"
+LOGFILE="$LOGDIR/hardware.log"
+mkdir -p "$LOGDIR"
+
+# 取 ATA SMART 属性行的 RAW_VALUE (破折号后第一个整数)
+ata_raw() {
+    grep -E "^[[:space:]]*$1[[:space:]]" 2>/dev/null \
+        | grep -oE -- '-[[:space:]]+[0-9]+' | head -1 \
+        | grep -oE '[0-9]+' | head -1
+}
+
+ts="$(date '+%Y-%m-%d %H:%M:%S')"
+{
+    echo "===== $ts ====="
+
+    gov="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)"
+    load="$(awk '{print $1","$2","$3}' /proc/loadavg 2>/dev/null)"
+    echo "CPU: governor=${gov:-unknown} loadavg=${load:-unknown}"
+
+    if command -v sensors >/dev/null 2>&1; then
+        sens_line="$(sensors 2>/dev/null \
+            | grep -Ei '^(Package id|Tctl|Tdie|edge|junction|Composite|temp[0-9]+|fan[0-9]+)' \
+            | sed -E 's/[[:space:]]+/ /g; s/[[:space:]]+$//' \
+            | paste -sd'|' -)"
+        [ -n "$sens_line" ] && echo "SENSORS: $sens_line"
+    fi
+
+    # SATA / SAS 硬盘
+    for d in /dev/sd[a-z]; do
+        [ -b "$d" ] || continue
+        info="$(smartctl -n standby -a "$d" 2>/dev/null)"
+        if printf '%s' "$info" | grep -qi 'STANDBY'; then
+            echo "$d: STANDBY (休眠中, 跳过SMART读取)"
+            continue
+        fi
+        model="$(printf '%s' "$info" | grep -E '^(Device Model|Model Number):' | head -1 | cut -d: -f2- | sed 's/^[[:space:]]*//')"
+        if [ -z "$model" ]; then
+            model="$(printf '%s' "$info" | grep -E '^(Vendor|Product):' | cut -d: -f2- | sed 's/^[[:space:]]*//' | paste -sd' ' -)"
+        fi
+        temp="$(printf '%s' "$info" | ata_raw 194)"
+        [ -z "$temp" ] && temp="$(printf '%s' "$info" | ata_raw 190)"
+        [ -z "$temp" ] && temp="$(printf '%s' "$info" | grep -i 'Current Drive Temperature:' | grep -oE '[0-9]+' | head -1)"
+        hours="$(printf '%s' "$info" | ata_raw 9)"
+        [ -z "$hours" ] && hours="$(printf '%s' "$info" | grep -i 'hours:minutes' | grep -oE '[0-9]+:' | head -1 | tr -d ':')"
+        health="$(printf '%s' "$info" | grep -Ei 'SMART (overall-health self-assessment test result|Health Status):' | grep -oE 'PASSED|FAILED|OK' | head -1)"
+        warns=""
+        for spec in "5 Reallocated_Sector_Ct:重映射扇区" "197 Current_Pending_Sector:待映射扇区" "198 Offline_Uncorrectable:不可纠正扇区" "187 Reported_Uncorrect:报告性错误" "199 UDMA_CRC_Error_Count:CRC接口错误"; do
+            id="${spec%% *}"
+            name="${spec#*:}"
+            v="$(printf '%s' "$info" | ata_raw "$id")"
+            if [ -n "$v" ] && [ "$v" -ne 0 ] 2>/dev/null; then
+                warns="${warns}${name}=${v};"
+            fi
+        done
+        echo "$d ${model:-未知型号}: ${temp:-N/A}°C 通电=${hours:-N/A}h SMART=${health:-N/A}${warns:+ 预警[$warns]}"
+    done
+
+    # NVMe 硬盘
+    for d in /dev/nvme[0-9]n1; do
+        [ -b "$d" ] || continue
+        info="$(smartctl -n standby -a "$d" 2>/dev/null)"
+        model="$(printf '%s' "$info" | grep '^Model Number:' | cut -d: -f2- | sed 's/^[[:space:]]*//')"
+        temp="$(printf '%s' "$info" | grep -E '^Temperature:' | grep -oE '[0-9]+' | head -1)"
+        hours="$(printf '%s' "$info" | grep '^Power On Hours:' | grep -oE '[0-9,]+' | head -1 | tr -d ',')"
+        used="$(printf '%s' "$info" | grep '^Percentage Used:' | grep -oE '[0-9]+' | head -1)"
+        health="$(printf '%s' "$info" | grep -Ei 'SMART (overall-health self-assessment test result|Health Status):' | grep -oE 'PASSED|FAILED|OK' | head -1)"
+        if [ -n "$used" ]; then life="$((100-used))%"; else life="N/A"; fi
+        echo "$d ${model:-未知型号}: ${temp:-N/A}°C 通电=${hours:-N/A}h 剩余寿命=${life} SMART=${health:-N/A}"
+    done
+
+    echo ""
+} >> "$LOGFILE" 2>&1
+LOGEOF
+chmod 0755 "$HWLOG_SCRIPT"
+
+# cron 定时任务: 每5分钟采集一次
+cat > /etc/cron.d/pve-hardware-log << 'CRONEOF'
+# pve-hardware-log - 硬件监控信息定时采集 (由 pve-manager-status.sh 维护)
+SHELL=/bin/bash
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+*/5 * * * * root /usr/local/bin/pve-hardware-log.sh
+CRONEOF
+chmod 0644 /etc/cron.d/pve-hardware-log
+
+# 日志轮转: 每日一次, 压缩保留30天
+cat > /etc/logrotate.d/pve-hardware-log << 'ROTEOF'
+# pve-hardware-log logrotate config (由 pve-manager-status.sh 维护)
+/var/log/pve-hardware/hardware.log {
+    daily
+    rotate 30
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+}
+ROTEOF
+chmod 0644 /etc/logrotate.d/pve-hardware-log
+
+# 立即执行一次, 保证部署完成后页面即可看到日志
+if "$HWLOG_SCRIPT" && [ -s "$HWLOG_DIR/hardware.log" ]; then
+    echo -e "  硬件日志首次采集完成 -> $HWLOG_DIR/hardware.log ✅"
+else
+    echo -e "  ⚠️ 硬件日志首次采集无输出 (可能无 sensors/smartctl, cron 仍会按周期重试)"
+fi
+
+echo && sleep 0.5
+
 ####################   概要页面监控功能实现   ####################
 
 echo -e "📋 正在添加概要页面监控功能:"
@@ -295,6 +417,8 @@ done
 cat >> "$tmpf1" << 'EOF'
 
         $res->{sata_status} = `for d in /dev/sd[a-z]; do [ -b "\$d" ] || continue; echo "===\$d==="; sudo smartctl -n standby -a "\$d" 2>/dev/null || true; done | grep -Ei '^===|model|vendor|product:|user capacity|power_on_hours|power_cycle_count|power on|powered up|drive temperature|temperature|smart overall|smart health|rotation rate|solid state|standby|reallocated|pending|uncorrect|udma_crc'`;
+
+        $res->{hardware_log_tail} = `tail -n 100 /var/log/pve-hardware/hardware.log 2>/dev/null`;
 EOF
 
 # 在实际修改前检查锚点文本是否存在, 若不存在则报错退出停止修改
@@ -1057,6 +1181,116 @@ cat >> "$tmpf2" << 'EOF'
         },
 EOF
 
+cat >> "$tmpf2" << 'EOF'
+
+        {
+            itemId: 'hardware-log',
+            colspan: 2,
+            printBar: false,
+            title: gettext('硬件监控日志'),
+            textField: 'hardware_log_tail',
+            renderer: function(value) {
+                let latest = value || '';
+                window.__pveHwLogLatest = latest;
+
+                // 事件委托只绑定一次 (renderer 会随状态轮询反复执行)
+                if (!window.__pveHwLogDelegated) {
+                    window.__pveHwLogDelegated = true;
+                    Ext.getBody().on('click', function(ev, target) {
+                        if (Ext.fly(target).hasCls('pve-hwlog-link')) {
+                            ev.preventDefault();
+                            window.pveShowHardwareLog();
+                        }
+                    }, null, { delegate: 'a.pve-hwlog-link' });
+                }
+
+                if (!window.pveShowHardwareLog) {
+                    window.pveShowHardwareLog = function() {
+                        // 动态获取当前节点名, 拿不到时回退 localhost (PVE API 支持本机别名)
+                        let node = 'localhost';
+                        let view = Ext.ComponentQuery.query('pveNodeStatus')[0];
+                        if (view && view.pveSelNode && view.pveSelNode.data && view.pveSelNode.data.node) {
+                            node = view.pveSelNode.data.node;
+                        }
+
+                        let timer = null;
+                        let win = Ext.create('Ext.window.Window', {
+                            title: gettext('硬件监控日志') + ' (/var/log/pve-hardware/hardware.log)',
+                            width: 880,
+                            height: 600,
+                            modal: true,
+                            layout: 'fit',
+                            bodyPadding: 10,
+                            items: [{
+                                xtype: 'textareafield',
+                                itemId: 'hwlogbody',
+                                readOnly: true,
+                                grow: false,
+                                fieldStyle: 'font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; line-height: 150%;',
+                                value: window.__pveHwLogLatest || gettext('暂无日志, 正在等待定时任务首次采集...')
+                            }],
+                            buttons: [
+                                {
+                                    xtype: 'checkbox',
+                                    itemId: 'hwlogauto',
+                                    boxLabel: gettext('自动刷新(10秒)'),
+                                    margin: '0 10 0 0',
+                                    listeners: {
+                                        change: function(cb, checked) {
+                                            if (timer) { clearInterval(timer); timer = null; }
+                                            if (checked) {
+                                                timer = setInterval(reload, 10000);
+                                            }
+                                        }
+                                    }
+                                },
+                                '->',
+                                { text: gettext('刷新'), handler: function() { reload(); } },
+                                { text: gettext('关闭'), handler: function() { win.close(); } }
+                            ],
+                            listeners: {
+                                close: function() {
+                                    if (timer) { clearInterval(timer); timer = null; }
+                                }
+                            }
+                        });
+
+                        function scrollBottom() {
+                            let field = win.down('#hwlogbody');
+                            if (field && field.inputEl && field.inputEl.dom) {
+                                field.inputEl.dom.scrollTop = field.inputEl.dom.scrollHeight;
+                            }
+                        }
+
+                        function reload() {
+                            Proxmox.Utils.API2Request({
+                                url: '/nodes/' + node + '/status',
+                                method: 'GET',
+                                success: function(resp) {
+                                    let v = (resp.result && resp.result.data && resp.result.data.hardware_log_tail) || '';
+                                    win.down('#hwlogbody').setValue(v || gettext('日志为空'));
+                                    scrollBottom();
+                                },
+                                failure: function(resp) {
+                                    Ext.Msg.alert(gettext('错误'), resp.htmlStatus || resp.statusText || 'request failed');
+                                }
+                            });
+                        }
+
+                        win.show();
+                        scrollBottom();
+                    };
+                }
+
+                let lineCount = latest.trim() ? latest.trim().split('\n').length : 0;
+                return '<a href="#" class="pve-hwlog-link" style="text-decoration:underline;">'
+                     + '📜 ' + gettext('查看硬件监控日志') + '</a>'
+                     + ' <span style="color:#888;font-size:11px;">/var/log/pve-hardware/hardware.log · '
+                     + gettext('每5分钟采集 · 保留30天 · 当前') + lineCount + gettext('行') + '</span>';
+            }
+        },
+EOF
+
 # 计算插入行号
 ln=$(sed -n '/pveversion/,+10{/},/{=;q}}' $pvemanagerlib)
 
@@ -1266,74 +1500,27 @@ echo && sleep 0.5
 
 ####################   调整页面高度   ####################
 
-echo -e "🎚️ 正在动态调整修改后的页面高度:"
+echo -e "🎚️ 正在调整概要页面高度 (固定高度改为最小高度, 面板随内容自适应):"
 
-# 基于模型: 每行内容 17px, 每个模块段落间额外 7px 间距
-calculate_height_increase() {
-    local total_lines=0
-    local module_count=0
-
-    # itemId:cpupower(CPU能耗): 固定1行
-    total_lines=$((total_lines + 1))
-    module_count=$((module_count + 1))
-
-    # itemId:cpufreq(CPU频率): 固定1行
-    total_lines=$((total_lines + 1))
-    module_count=$((module_count + 1))
-
-    # itemId:sensors(传感器): 主信息固定1行
-    total_lines=$((total_lines + 1))
-    module_count=$((module_count + 1))
-    # 使用 sensors 命令输出根据核心数量计算额外行数
-    local core_temp_count=$(sudo sensors 2>/dev/null | grep -c '^Core')
-    if [ "$core_temp_count" -gt 1 ]; then
-        local sensor_core_lines=$(((core_temp_count + 4 - 1) / 4))
-        total_lines=$((total_lines + sensor_core_lines))
-    fi
-
-    # itemId:corefreq(核心频率): 无固定行
-    module_count=$((module_count + 1))
-    # 根据 /proc/cpuinfo 输出的线程数量计算额外行数
-    local thread_count=$(grep -c ^processor /proc/cpuinfo)
-    if [ "$thread_count" -gt 0 ]; then
-        local core_freq_lines=$(((thread_count + 4 - 1) / 4))
-        total_lines=$((total_lines + core_freq_lines))
-    fi
-
-    # itemId:nvme-status(NVMe硬盘): 固定4行每个
-    local nvme_count=$(lsblk -d -o NAME | grep -c 'nvme[0-9]')
-    if [ "$nvme_count" -gt 0 ]; then
-        local nvme_lines=$((nvme_count * 4))
-        total_lines=$((total_lines + nvme_lines))
-        module_count=$((module_count + nvme_count))
-    fi
-
-    # itemId:sata_status(SATA硬盘): 无固定行
-    module_count=$((module_count + 1))
-    local sata_count=$(lsblk -d -o NAME | grep -c 'sd[a-z]')
-    if [ "$sata_count" -gt 0 ]; then
-        # 第1个SATA硬盘占2行, 后续每个占3行(含1行间距)
-        local sata_lines=$((2 + (sata_count - 1) * 3))
-        total_lines=$((total_lines + sata_lines))
+# PVE 原状态面板使用固定 height。按行数估算写死高度并不可靠:
+# 硬盘数量变化、SMART 预警换行、长型号换行、浏览器缩放都会使实际内容超出,
+# 进而裁切面板下方的"软件源状态"等行。改为 minHeight:
+# 保留 PVE 默认最小高度, 同时允许面板由内容自然撑开, 不再遮挡任何行。
+# 范围限定在 PVE.node.StatusView 类定义内, 只替换其首个 height 属性。
+# 区间终点 [Hh]eight: 同时匹配 "height:" 与已替换出的 "minHeight:",
+# 因此未修改时命中数字型 height 才替换; 已替换过则天然跳过, 重复执行幂等,
+# 也不会误伤后续其它组件的 height
+status_block=$(sed -n "/Ext.define('PVE.node.StatusView'/,/[Hh]eight:/p" "$pvemanagerlib")
+if echo "$status_block" | grep -Eq '^[[:space:]]*height:[[:space:]]*[0-9]+,'; then
+    sed -i -E "/Ext.define\('PVE.node.StatusView'/,/[Hh]eight:/{s/^([[:space:]]*)height: *[0-9]+,/\1minHeight: 300,/}" "$pvemanagerlib"
+    if sed -n "/Ext.define('PVE.node.StatusView'/,/[Hh]eight:/p" "$pvemanagerlib" | grep -q 'minHeight: 300,'; then
+        echo "已将状态面板固定高度改为 minHeight: 300 (内容自适应, 不会再遮挡软件源状态行) ✅"
     else
-        # 不存在SATA硬盘时, 占用1行显示提示信息
-        total_lines=$((total_lines + 1))
+        echo "⚠️ 状态面板高度替换未生效, 请检查 $pvemanagerlib 版本是否兼容"
     fi
-
-    # 根据模型计算总高度增量: (行数 * 17px) + (模块数 * 7px)
-    local height_increase=$((total_lines * 17 + module_count * 7))
-    echo $height_increase
-}
-
-# 获取计算出的高度增量
-height_increase=$(calculate_height_increase)
-
-# 基于基础高度(350px)计算新高度
-new_height=$((350 + height_increase))
-
-# 使用 sed 命令定位并更新 PVE.node.StatusView 的 height 属性
-sed -i -E "/Ext.define\('PVE.node.StatusView'/,/height:/{s/height: *[0-9]+,/height: $new_height,/}" "$pvemanagerlib"
-echo "页面高度经计算模型已动态调整为 ${new_height}px ✅"
+else
+    echo "未发现待替换的固定 height 属性 (可能已调整过), 跳过 ➡️"
+fi
 
 echo && sleep 0.5
 
@@ -1353,4 +1540,5 @@ if [ $restart_status -ne 0 ]; then
     echo && exit 1
 fi
 
-echo -e "\n✅ 修改完成, 请使用 Ctrl + F5 刷新浏览器 Proxmox VE Web 管理页面缓存\n"
+echo -e "\n✅ 修改完成, 请使用 Ctrl + F5 刷新浏览器 Proxmox VE Web 管理页面缓存"
+echo -e "📜 硬件监控日志: /var/log/pve-hardware/hardware.log (每5分钟采集, 概要页「硬件监控日志」行可点击查看, 日志保留30天)\n"
