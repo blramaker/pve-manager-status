@@ -607,12 +607,12 @@ for x in {0..9}; do
 
                 // 与 SATA 行完全一致的 7 列固定布局, 保证上下纵向对齐
                 const COLS = '<colgroup>' +
-                    '<col style="width:230px"><col style="width:95px"><col style="width:165px">' +
-                    '<col style="width:85px"><col style="width:185px"><col style="width:95px">' +
-                    '<col style="width:110px"></colgroup>';
-                const td = (h) => \`<td style="padding:0 8px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
+                    '<col style="width:182px"><col style="width:104px"><col style="width:140px">' +
+                    '<col style="width:76px"><col style="width:150px"><col style="width:90px">' +
+                    '<col style="width:98px"></colgroup>';
+                const td = (h) => \`<td style="padding:0 6px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
                 const rows = [
-                    \`<tr><td style="padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
+                    \`<tr><td style="padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
                     td(life !== '' ? \`健康: \${cLife(life)}\` : ''),
                     td((rd || wr) ? \`读写: \${rd ? toTB(rd) : '-'} / \${wr ? toTB(wr) : '-'}\` : ''),
                     td(temp ? \`温度: \${cTemp(temp)}\` : ''),
@@ -631,9 +631,9 @@ for x in {0..9}; do
                 }
                 if (healthOK === false) errs.push(cBad('SMART 自检未通过'));
                 if (errs.length) {
-                    rows.push(\`</tr><tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 8px;text-align:left;white-space:nowrap;">\${errs.join(' ')}</td>\`);
+                    rows.push(\`</tr><tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 6px;text-align:left;white-space:nowrap;">\${errs.join(' ')}</td>\`);
                 }
-                return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody>\${rows.join('')}</tr></tbody></table>\`;
+                return \`<table style="border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody>\${rows.join('')}</tr></tbody></table>\`;
             }
         },
 EOF
@@ -689,14 +689,14 @@ for __d in /dev/sd[a-z]; do
                         }
                         if (!block) return '<span style="color:#888;">未检测到硬盘（可能已直通或移除）</span>';
                         var COLS = '<colgroup>' +
-                            '<col style="width:230px"><col style="width:95px"><col style="width:165px">' +
-                            '<col style="width:85px"><col style="width:185px"><col style="width:95px">' +
-                            '<col style="width:110px"></colgroup>';
+                            '<col style="width:182px"><col style="width:104px"><col style="width:140px">' +
+                            '<col style="width:76px"><col style="width:150px"><col style="width:90px">' +
+                            '<col style="width:98px"></colgroup>';
                         var tbl = function(inner) {
-                            return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
+                            return \`<table style="border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
                         };
                         if (/STANDBY/i.test(block)) {
-                            return tbl(\`<td style="padding:0 8px;white-space:nowrap;"><strong>\${dev}</strong></td><td colspan="6" style="padding:0 8px;text-align:left;white-space:nowrap;color:#888;border-left:1px solid #cfcfcf;">休眠中（未唤醒读取SMART）</td>\`);
+                            return tbl(\`<td style="padding:0 6px;white-space:nowrap;"><strong>\${dev}</strong></td><td colspan="6" style="padding:0 6px;text-align:left;white-space:nowrap;color:#888;border-left:1px solid #cfcfcf;">休眠中（未唤醒读取SMART）</td>\`);
                         }
 
                         var g = function(re) { var m = block.match(re); return m ? m[1].trim() : ''; };
@@ -756,10 +756,10 @@ for __d in /dev/sd[a-z]; do
 
                         // 与 NVMe 行完全一致的 7 列固定布局; 机械盘无读写数据, 该列留空占位
                         var td = function(h) {
-                            return \`<td style="padding:0 8px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
+                            return \`<td style="padding:0 6px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
                         };
                         var tds = [
-                            \`<td style="padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
+                            \`<td style="padding:0 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
                             td(ataHealth ? \`<span title="根据SMART关键属性(5/197/198/187)估算">健康(估): \${cLife(life)}</span>\` : ''),
                             td(ioText),
                             td(temp ? \`温度: \${cT(temp)}\` : ''),
@@ -778,9 +778,9 @@ for __d in /dev/sd[a-z]; do
                         if (healthOK === false) alerts.unshift('SMART 自检未通过');
                         var inner = tds.join('') + '</tr>';
                         if (alerts.length) {
-                            inner += \`<tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 8px;text-align:left;white-space:nowrap;">\${red('⚠ ' + alerts.join(' '))}</td>\`;
+                            inner += \`<tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 6px;text-align:left;white-space:nowrap;">\${red('⚠ ' + alerts.join(' '))}</td>\`;
                         }
-                        return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
+                        return \`<table style="border-collapse:collapse;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
                     };
                 }
                 return window.__pveSata('$__d', value);
