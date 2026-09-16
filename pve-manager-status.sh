@@ -674,6 +674,10 @@ for __d in /dev/sd[a-z]; do
                         };
                         var red = function(v) { return \`<span style="color:#e04b4b;font-weight:bold;">\${v}</span>\`; };
                         var grn = function(v) { return \`<span style="color:green;font-weight:bold;">\${v}</span>\`; };
+                        var cLife = function(v) {
+                            var c = v < 50 ? '#e04b4b' : (v < 80 ? 'orange' : 'green');
+                            return \`<span style="color:\${c};font-weight:bold;">\${v}%</span>\`;
+                        };
 
                         var chunks = raw.split(/^(===\/dev\/sd[a-z]+===)\$/m);
                         var block = '';
@@ -714,8 +718,28 @@ for __d in /dev/sd[a-z]; do
                               || block.match(/SMART Health Status:\s*(\w+)/i);
                         var healthOK = hm ? (/^(PASSED|OK)\$/.test(hm[1].toUpperCase())) : null;
 
+                        // ATA 关键健康属性原始值 (HDD 无固件磨损百分比, 由这些属性估算健康度)
+                        var attrV = function(re) {
+                            var mA = block.match(re);
+                            return mA ? parseInt(mA[1], 10) : null;
+                        };
+                        var v5   = attrV(/^\s*5\s+Reallocated_Sector_Ct\b.*?-\s*(\d+)/m);
+                        var v197 = attrV(/^\s*197\s+Current_Pending_Sector\b.*?-\s*(\d+)/m);
+                        var v198 = attrV(/^\s*198\s+Offline_Uncorrectable\b.*?-\s*(\d+)/m);
+                        var v187 = attrV(/^\s*187\s+Reported_Uncorrect\b.*?-\s*(\d+)/m);
+                        var v199 = attrV(/^\s*199\s+UDMA_CRC_Error_Count\b.*?-\s*(\d+)/m);
+                        var ataHealth = (v5 !== null || v197 !== null || v198 !== null || v187 !== null);
+                        var life = 100;
+                        if (v5)   life -= Math.min(v5 * 2, 40);    // 重映射扇区
+                        if (v197) life -= Math.min(v197 * 5, 30);   // 待映射扇区
+                        if (v198) life -= Math.min(v198 * 10, 60);  // 无法纠正扇区
+                        if (v187) life -= Math.min(v187, 20);       // 报告性不可纠正
+                        if (healthOK === false) life = 0;           // SMART 整体自检失败
+                        life = Math.max(0, life);
+
                         var parts = [\`<strong>\${model}</strong>\`];
                         if (temp) parts.push(\`温度: \${cT(temp)}\`);
+                        if (ataHealth) parts.push(\`<span title="根据SMART关键属性(5/197/198/187)估算">健康(估): \${cLife(life)}</span>\`);
                         if (hours || cycles) {
                             var s = '通电: ';
                             if (hours) s += \`\${hours}时\`;
@@ -729,18 +753,13 @@ for __d in /dev/sd[a-z]; do
                             parts.push(\`异常断电: \${red(unsafe)}\`);
                         }
 
-                        var warnAttrs = [
-                            [/^\s*5\s+Reallocated_Sector_Ct\b.*?-\s*(\d+)/m, '重映射扇区'],
-                            [/^\s*197\s+Current_Pending_Sector\b.*?-\s*(\d+)/m, '待映射扇区'],
-                            [/^\s*198\s+Offline_Uncorrectable\b.*?-\s*(\d+)/m, '无法纠正扇区'],
-                            [/^\s*187\s+Reported_Uncorrect\b.*?-\s*(\d+)/m, '不可纠正'],
-                            [/^\s*199\s+UDMA_CRC_Error_Count\b.*?-\s*(\d+)/m, 'CRC接口错误']
-                        ];
+                        // 非零预警属性红色提示 (CRC 199 是线材/接口问题, 不计入健康扣分)
                         var alerts = [];
-                        for (var k = 0; k < warnAttrs.length; k++) {
-                            var mW = block.match(warnAttrs[k][0]);
-                            if (mW && parseInt(mW[1], 10) !== 0) alerts.push(warnAttrs[k][1] + ':' + mW[1]);
-                        }
+                        if (v5)   alerts.push('重映射扇区:' + v5);
+                        if (v197) alerts.push('待映射扇区:' + v197);
+                        if (v198) alerts.push('无法纠正扇区:' + v198);
+                        if (v187) alerts.push('不可纠正:' + v187);
+                        if (v199) alerts.push('CRC接口错误:' + v199 + '(多为SATA线问题)');
                         if (alerts.length) parts.push(red('⚠ ' + alerts.join(' ')));
 
                         return parts.join(' | ');
