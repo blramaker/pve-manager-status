@@ -428,7 +428,7 @@ done
 
 cat >> "$tmpf1" << 'EOF'
 
-        $res->{sata_status} = `for d in /dev/sd[a-z]; do [ -b "\$d" ] || continue; echo "===\$d==="; sudo smartctl -n standby -a "\$d" 2>/dev/null || true; done | grep -Ei '^===|model|vendor|product:|user capacity|power_on_hours|power_cycle_count|power on|powered up|drive temperature|temperature|smart overall|smart health|rotation rate|solid state|standby|reallocated|pending|uncorrect|udma_crc|power-off|retract|emergency'`;
+        $res->{sata_status} = `for d in /dev/sd[a-z]; do [ -b "\$d" ] || continue; echo "===\$d==="; sudo smartctl -n standby -a "\$d" 2>/dev/null || true; bn=\$(basename "\$d"); awk -v dn="\$bn" '\$3==dn { print "PVESTATS:", \$6, \$10 }' /proc/diskstats; done | grep -Ei '^===|model|vendor|product:|user capacity|power_on_hours|power_cycle_count|power on|powered up|drive temperature|temperature|smart overall|smart health|rotation rate|solid state|standby|reallocated|pending|uncorrect|udma_crc|power-off|retract|emergency|pvestats'`;
 
         $res->{hardware_log_tail} = `tail -n 100 /var/log/pve-hardware/hardware.log 2>/dev/null`;
 EOF
@@ -724,6 +724,13 @@ for __d in /dev/sd[a-z]; do
                         }
                         var cycles = g(/^\s*12\s+Power_Cycle_Count\b.*?-\s*(\d+)/m);
                         var unsafe = g(/^\s*192\s+\S+.*?-\s*(\d+)/m);
+                        // /proc/diskstats: 字段6=累计读扇区, 字段10=累计写扇区 (每扇区512字节, 开机以来)
+                        var mIO = block.match(/^PVESTATS:\s*(\d+)\s+(\d+)/m);
+                        var ioText = '';
+                        if (mIO) {
+                            var secToTB = function(sec) { return (sec * 512 / 1e12).toFixed(1) + 'T'; };
+                            ioText = \`读写: \${secToTB(mIO[1])} / \${secToTB(mIO[2])}\`;
+                        }
                         var hm = block.match(/SMART overall-health[^\n:]*:\s*(\w+)/i)
                               || block.match(/SMART Health Status:\s*(\w+)/i);
                         var healthOK = hm ? (/^(PASSED|OK)\$/.test(hm[1].toUpperCase())) : null;
@@ -754,7 +761,7 @@ for __d in /dev/sd[a-z]; do
                         var tds = [
                             \`<td style="padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
                             td(ataHealth ? \`<span title="根据SMART关键属性(5/197/198/187)估算">健康(估): \${cLife(life)}</span>\` : ''),
-                            td(''),
+                            td(ioText),
                             td(temp ? \`温度: \${cT(temp)}\` : ''),
                             td((hours || cycles) ? \`通电: \${hours ? hours + '时' : ''}\${cycles ? ',次: ' + cycles : ''}\` : ''),
                             td(healthOK !== null ? (healthOK ? \`SMART: \${grn('正常')}\` : \`SMART: \${red('警告')}\`) : ''),
