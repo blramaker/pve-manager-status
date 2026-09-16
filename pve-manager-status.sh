@@ -605,32 +605,35 @@ for x in {0..9}; do
                 const hm = value.match(/SMART overall-health[^\n:]*:\s*(\w+)/i);
                 const healthOK = hm ? (/^(PASSED|OK)$/.test(hm[1].toUpperCase())) : null;
 
-                const parts = [\`<strong>\${model}</strong>\`];
-                if (temp) parts.push(\`温度: \${cTemp(temp)}\`);
-                if (life !== '') parts.push(\`健康: \${cLife(life)}\`);
-                if (unsafe !== '') {
-                    parts.push((parseInt(unsafe, 10) !== 0)
-                        ? \`异常断电: \${cBad(unsafe)}\`
-                        : \`异常断电: \${unsafe}\`);
-                }
-                if (rd || wr) {
-                    parts.push(\`读写: \${rd ? toTB(rd) : '-'} / \${wr ? toTB(wr) : '-'}\`);
-                }
-                if (hours || cycles) {
-                    let s = '通电: ';
-                    if (hours) s += \`\${hours}时\`;
-                    if (cycles) s += \` (次: \${cycles})\`;
-                    parts.push(s);
-                }
-                if (healthOK !== null) {
-                    parts.push(healthOK
+                // 与 SATA 行完全一致的 7 列固定布局, 保证上下纵向对齐
+                const COLS = '<colgroup>' +
+                    '<col style="width:230px"><col style="width:95px"><col style="width:165px">' +
+                    '<col style="width:85px"><col style="width:185px"><col style="width:95px">' +
+                    '<col style="width:110px"></colgroup>';
+                const td = (h) => \`<td style="padding:0 8px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
+                const rows = [
+                    \`<tr><td style="padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
+                    td(life !== '' ? \`健康: \${cLife(life)}\` : ''),
+                    td((rd || wr) ? \`读写: \${rd ? toTB(rd) : '-'} / \${wr ? toTB(wr) : '-'}\` : ''),
+                    td(temp ? \`温度: \${cTemp(temp)}\` : ''),
+                    td((hours || cycles) ? \`通电: \${hours ? hours + '时' : ''}\${cycles ? ',次: ' + cycles : ''}\` : ''),
+                    td(healthOK !== null ? (healthOK
                         ? 'SMART: <span style="color:green;font-weight:bold;">正常</span>'
-                        : 'SMART: <span style="color:#e04b4b;font-weight:bold;">警告</span>');
-                }
+                        : 'SMART: <span style="color:#e04b4b;font-weight:bold;">警告</span>') : ''),
+                    td(unsafe !== '' ? ((parseInt(unsafe, 10) !== 0)
+                        ? \`异常断电: \${cBad(unsafe)}\` : \`异常断电: \${unsafe}\`) : '')
+                ];
+
+                // 错误信息独占第二行, 从第5列(通电)开始, 与 SATA 行错误对齐
+                const errs = [];
                 if (integ !== '' && parseInt(integ, 10) !== 0) {
-                    parts.push(cBad(\`完整性错误: \${integ}\` + (spare ? \` (备用空间\${spare})\` : '')));
+                    errs.push(cBad(\`完整性错误: \${integ}\` + (spare ? \` (备用空间\${spare})\` : '')));
                 }
-                return parts.join(' | ');
+                if (healthOK === false) errs.push(cBad('SMART 自检未通过'));
+                if (errs.length) {
+                    rows.push(\`</tr><tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 8px;text-align:left;white-space:nowrap;">\${errs.join(' ')}</td>\`);
+                }
+                return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody>\${rows.join('')}</tr></tbody></table>\`;
             }
         },
 EOF
@@ -685,8 +688,15 @@ for __d in /dev/sd[a-z]; do
                             if (chunks[i].replace(/=/g, '') === dev) { block = chunks[i + 1] || ''; break; }
                         }
                         if (!block) return '<span style="color:#888;">未检测到硬盘（可能已直通或移除）</span>';
+                        var COLS = '<colgroup>' +
+                            '<col style="width:230px"><col style="width:95px"><col style="width:165px">' +
+                            '<col style="width:85px"><col style="width:185px"><col style="width:95px">' +
+                            '<col style="width:110px"></colgroup>';
+                        var tbl = function(inner) {
+                            return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
+                        };
                         if (/STANDBY/i.test(block)) {
-                            return \`<strong>\${dev}</strong> | <span style="color:#888;">休眠中（未唤醒读取SMART）</span>\`;
+                            return tbl(\`<td style="padding:0 8px;white-space:nowrap;"><strong>\${dev}</strong></td><td colspan="6" style="padding:0 8px;text-align:left;white-space:nowrap;color:#888;border-left:1px solid #cfcfcf;">休眠中（未唤醒读取SMART）</td>\`);
                         }
 
                         var g = function(re) { var m = block.match(re); return m ? m[1].trim() : ''; };
@@ -737,32 +747,33 @@ for __d in /dev/sd[a-z]; do
                         if (healthOK === false) life = 0;           // SMART 整体自检失败
                         life = Math.max(0, life);
 
-                        var parts = [\`<strong>\${model}</strong>\`];
-                        if (temp) parts.push(\`温度: \${cT(temp)}\`);
-                        if (ataHealth) parts.push(\`<span title="根据SMART关键属性(5/197/198/187)估算">健康(估): \${cLife(life)}</span>\`);
-                        if (hours || cycles) {
-                            var s = '通电: ';
-                            if (hours) s += \`\${hours}时\`;
-                            if (cycles) s += \`,次: \${cycles}\`;
-                            parts.push(s);
-                        }
-                        if (healthOK !== null) {
-                            parts.push(healthOK ? \`SMART: \${grn('正常')}\` : \`SMART: \${red('警告')}\`);
-                        }
-                        if (unsafe !== '' && parseInt(unsafe, 10) !== 0) {
-                            parts.push(\`异常断电: \${red(unsafe)}\`);
-                        }
+                        // 与 NVMe 行完全一致的 7 列固定布局; 机械盘无读写数据, 该列留空占位
+                        var td = function(h) {
+                            return \`<td style="padding:0 8px;text-align:center;white-space:nowrap;border-left:1px solid #cfcfcf;">\${h}</td>\`;
+                        };
+                        var tds = [
+                            \`<td style="padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="\${model}"><strong>\${model}</strong></td>\`,
+                            td(ataHealth ? \`<span title="根据SMART关键属性(5/197/198/187)估算">健康(估): \${cLife(life)}</span>\` : ''),
+                            td(''),
+                            td(temp ? \`温度: \${cT(temp)}\` : ''),
+                            td((hours || cycles) ? \`通电: \${hours ? hours + '时' : ''}\${cycles ? ',次: ' + cycles : ''}\` : ''),
+                            td(healthOK !== null ? (healthOK ? \`SMART: \${grn('正常')}\` : \`SMART: \${red('警告')}\`) : ''),
+                            td((unsafe !== '' && parseInt(unsafe, 10) !== 0) ? \`异常断电: \${red(unsafe)}\` : '')
+                        ];
 
-                        // 非零预警属性红色提示 (CRC 199 是线材/接口问题, 不计入健康扣分)
+                        // 非零预警属性移到第二行 (CRC 199 是线材/接口问题, 不计入健康扣分)
                         var alerts = [];
                         if (v5)   alerts.push('重映射扇区:' + v5);
                         if (v197) alerts.push('待映射扇区:' + v197);
                         if (v198) alerts.push('无法纠正扇区:' + v198);
                         if (v187) alerts.push('不可纠正:' + v187);
                         if (v199) alerts.push('CRC接口错误:' + v199 + '(多为SATA线问题)');
-                        if (alerts.length) parts.push(red('⚠ ' + alerts.join(' ')));
-
-                        return parts.join(' | ');
+                        if (healthOK === false) alerts.unshift('SMART 自检未通过');
+                        var inner = tds.join('') + '</tr>';
+                        if (alerts.length) {
+                            inner += \`<tr><td colspan="4" style="border-left:none;"></td><td colspan="3" style="padding:0 8px;text-align:left;white-space:nowrap;">\${red('⚠ ' + alerts.join(' '))}</td>\`;
+                        }
+                        return \`<table style="border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;line-height:22px;">\${COLS}<tbody><tr>\${inner}</tr></tbody></table>\`;
                     };
                 }
                 return window.__pveSata('$__d', value);
