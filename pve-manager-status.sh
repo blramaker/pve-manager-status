@@ -906,8 +906,8 @@ fi
 # 应用更改
 sed -i "${ln}r $tmpf2" "$pvemanagerlib"
 
-# 验证修改是否成功
-if grep -q "itemId: 'cpupower'" "$pvemanagerlib"; then
+# 验证修改是否成功 (cpufreq 是注入块首行的唯一标记, 旧版 cpupower 已合并删除)
+if grep -q "itemId: 'cpufreq'" "$pvemanagerlib"; then
     echo "已完成修改: $pvemanagerlib ✅"
 else
     echo "⛔ 检查对 $pvemanagerlib 添加的内容未生效!"
